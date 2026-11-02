@@ -45,6 +45,12 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	// users: columns required by repository queries
 	requireColumn(t, tx, "users", "username", "character varying", 100, false)
 	requireColumn(t, tx, "users", "notes", "text", 0, false)
+	// total_consumed 驱动邀请返利的消费解冻判定（231_affiliate_rebate_consume_unlock.sql）。
+	requireColumn(t, tx, "users", "total_consumed", "numeric", 0, false)
+
+	// user_affiliate_ledger: 消费解冻门槛（NULL = 已解冻或未冻结）。
+	requireColumn(t, tx, "user_affiliate_ledger", "unlock_consume_required", "numeric", 0, true)
+	requireColumn(t, tx, "user_affiliate_ledger", "unlock_consume_baseline", "numeric", 0, true)
 
 	// accounts: schedulable and rate-limit fields
 	requireColumn(t, tx, "accounts", "notes", "text", 0, true)

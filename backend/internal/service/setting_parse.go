@@ -127,6 +127,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyDefaultBalance:                            strconv.FormatFloat(s.cfg.Default.UserBalance, 'f', 8, 64),
 		SettingKeyAffiliateRebateRate:                       strconv.FormatFloat(AffiliateRebateRateDefault, 'f', 8, 64),
 		SettingKeyAffiliateRebateFreezeHours:                strconv.Itoa(AffiliateRebateFreezeHoursDefault),
+		SettingKeyAffiliateRebateUnlockConsumePercent:       strconv.FormatFloat(AffiliateRebateUnlockConsumePercentDefault, 'f', -1, 64),
 		SettingKeyAffiliateRebateDurationDays:               strconv.Itoa(AffiliateRebateDurationDaysDefault),
 		SettingKeyAffiliateRebatePerInviteeCap:              strconv.FormatFloat(AffiliateRebatePerInviteeCapDefault, 'f', 2, 64),
 		SettingKeyDefaultUserRPMLimit:                       "0",
@@ -404,6 +405,12 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 			freezeHours = AffiliateRebateFreezeHoursMax
 		}
 		result.AffiliateRebateFreezeHours = freezeHours
+	}
+	// 缺失或非法时回退默认值（100%），避免解析失败被当成「0 = 不冻结」。
+	if unlockPercent, err := strconv.ParseFloat(settings[SettingKeyAffiliateRebateUnlockConsumePercent], 64); err == nil {
+		result.AffiliateRebateUnlockConsumePercent = clampAffiliateUnlockConsumePercent(unlockPercent)
+	} else {
+		result.AffiliateRebateUnlockConsumePercent = AffiliateRebateUnlockConsumePercentDefault
 	}
 	if durationDays, err := strconv.Atoi(settings[SettingKeyAffiliateRebateDurationDays]); err == nil && durationDays >= 0 {
 		if durationDays > AffiliateRebateDurationDaysMax {
@@ -997,6 +1004,21 @@ func clampAffiliateRebateRate(value float64) float64 {
 	}
 	if value > AffiliateRebateRateMax {
 		return AffiliateRebateRateMax
+	}
+	return value
+}
+
+// clampAffiliateUnlockConsumePercent 将解冻消费比例限制到 [Min, Max]。
+// NaN / Inf 回退到默认值，因为调用方只关心一个可用的数值。
+func clampAffiliateUnlockConsumePercent(value float64) float64 {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return AffiliateRebateUnlockConsumePercentDefault
+	}
+	if value < AffiliateRebateUnlockConsumePercentMin {
+		return AffiliateRebateUnlockConsumePercentMin
+	}
+	if value > AffiliateRebateUnlockConsumePercentMax {
+		return AffiliateRebateUnlockConsumePercentMax
 	}
 	return value
 }

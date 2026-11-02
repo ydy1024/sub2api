@@ -42,10 +42,20 @@ LEFT JOIN (
     GROUP BY user_id
 ) rebated ON rebated.user_id = ua.user_id
 LEFT JOIN (
-    SELECT user_id, COALESCE(SUM(amount), 0)::double precision AS matured_frozen_quota
-    FROM user_affiliate_ledger
-    WHERE action = 'accrue' AND frozen_until IS NOT NULL AND frozen_until <= NOW()
-    GROUP BY user_id
+    -- 已达解冻条件但尚未 thaw 的返利（懒解冻，读取时先纳入可用额度展示）：
+    -- 被邀请人自计提以来的新增消费已达到 unlock_consume_required。
+    SELECT l.user_id, COALESCE(SUM(l.amount), 0)::double precision AS matured_frozen_quota
+    FROM user_affiliate_ledger l
+    WHERE l.action = 'accrue'
+      AND l.unlock_consume_required IS NOT NULL
+      AND (
+          l.source_user_id IS NULL
+          OR COALESCE(
+                 (SELECT u2.total_consumed FROM users u2 WHERE u2.id = l.source_user_id),
+                 0
+             ) - COALESCE(l.unlock_consume_baseline, 0) >= l.unlock_consume_required
+      )
+    GROUP BY l.user_id
 ) matured ON matured.user_id = ua.user_id
 WHERE ua.user_id = $1
 LIMIT 1`
@@ -114,16 +124,16 @@ func (r *affiliateRepository) BindInviter(ctx context.Context, userID, inviterID
 	return bound, nil
 }
 
-func (r *affiliateRepository) AccrueQuota(ctx context.Context, inviterID, inviteeUserID int64, amount float64, freezeHours int, sourceOrderID *int64) (bool, error) {
+func (r *affiliateRepository) AccrueQuota(ctx context.Context, inviterID, inviteeUserID int64, amount float64, unlockConsumeRequired float64, sourceOrderID *int64) (bool, error) {
 	if amount <= 0 {
 		return false, nil
 	}
 
 	var applied bool
 	err := r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
-		// freezeHours > 0: add to frozen quota; == 0: add to available quota directly
+		// unlockConsumeRequired > 0: add to frozen quota; <= 0: add to available quota directly
 		var updateSQL string
-		if freezeHours > 0 {
+		if unlockConsumeRequired > 0 {
 			updateSQL = "UPDATE user_affiliates SET aff_frozen_quota = aff_frozen_quota + $1, aff_history_quota = aff_history_quota + $1, updated_at = NOW() WHERE user_id = $2"
 		} else {
 			updateSQL = "UPDATE user_affiliates SET aff_quota = aff_quota + $1, aff_history_quota = aff_history_quota + $1, updated_at = NOW() WHERE user_id = $2"
@@ -138,11 +148,21 @@ func (r *affiliateRepository) AccrueQuota(ctx context.Context, inviterID, invite
 			return nil
 		}
 
-		if freezeHours > 0 {
+		if unlockConsumeRequired > 0 {
+			// baseline 取被邀请人当前的累计消费快照，解冻时比较增量消费。
+			// 用子查询取值以保证 baseline 与本条流水在同一事务内一致。
 			if _, err = txClient.ExecContext(txCtx, `
-INSERT INTO user_affiliate_ledger (user_id, action, amount, source_user_id, source_order_id, frozen_until, created_at, updated_at)
-VALUES ($1, 'accrue', $2, $3, $4, NOW() + make_interval(hours => $5), NOW(), NOW())`,
-				inviterID, amount, inviteeUserID, nullableInt64Arg(sourceOrderID), freezeHours); err != nil {
+INSERT INTO user_affiliate_ledger (
+    user_id, action, amount, source_user_id, source_order_id,
+    unlock_consume_required, unlock_consume_baseline, created_at, updated_at
+)
+VALUES (
+    $1, 'accrue', $2, $3, $4,
+    $5,
+    COALESCE((SELECT total_consumed FROM users WHERE id = $3), 0),
+    NOW(), NOW()
+)`,
+				inviterID, amount, inviteeUserID, nullableInt64Arg(sourceOrderID), unlockConsumeRequired); err != nil {
 				return fmt.Errorf("insert affiliate accrue ledger: %w", err)
 			}
 		} else {
@@ -190,16 +210,30 @@ func (r *affiliateRepository) ThawFrozenQuota(ctx context.Context, userID int64)
 	return thawed, err
 }
 
-// thawFrozenQuotaTx moves matured frozen quota to available quota within an existing tx.
+// thawFrozenQuotaTx moves frozen quota whose unlock condition is met to available
+// quota within an existing tx.
+//
+// 解冻条件：被邀请人（source_user_id）自计提时起新增的消费额
+// （total_consumed - unlock_consume_baseline）达到 unlock_consume_required。
+//
+// source_user_id 为 NULL 时（被邀请人已被删除，ON DELETE SET NULL）直接解冻，
+// 否则这笔返利将永久卡在冻结中无法领取。
 func thawFrozenQuotaTx(txCtx context.Context, txClient *dbent.Client, userID int64) (float64, error) {
 	rows, err := txClient.QueryContext(txCtx, `
 WITH matured AS (
-    UPDATE user_affiliate_ledger
-    SET frozen_until = NULL, updated_at = NOW()
-    WHERE user_id = $1
-      AND frozen_until IS NOT NULL
-      AND frozen_until <= NOW()
-    RETURNING amount
+    UPDATE user_affiliate_ledger l
+    SET unlock_consume_required = NULL,
+        updated_at = NOW()
+    WHERE l.user_id = $1
+      AND l.unlock_consume_required IS NOT NULL
+      AND (
+          l.source_user_id IS NULL
+          OR COALESCE(
+                 (SELECT u.total_consumed FROM users u WHERE u.id = l.source_user_id),
+                 0
+             ) - COALESCE(l.unlock_consume_baseline, 0) >= l.unlock_consume_required
+      )
+    RETURNING l.amount
 )
 SELECT COALESCE(SUM(amount), 0) FROM matured`, userID)
 	if err != nil {
@@ -1105,6 +1139,82 @@ WHERE user_id = ANY($2)`, nullableArg(ratePercent), pq.Array(userIDs))
 		}
 		return nil
 	})
+}
+
+// VoidFrozenRebateByOrderID 撤销由指定充值订单产生的仍处于冻结状态的返利条目。
+// 已解冻的条目（unlock_consume_required IS NULL）不受影响。
+// 幂等：同一 orderID 多次调用结果一致。
+func (r *affiliateRepository) VoidFrozenRebateByOrderID(ctx context.Context, orderID int64) (voided int, amount float64, err error) {
+	err = r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		// 取出仍冻结的条目，加行锁
+		type frozenRow struct {
+			id     int64
+			userID int64
+			amount float64
+		}
+		rows, qErr := txClient.QueryContext(txCtx, `
+			SELECT l.id, l.user_id, l.amount::double precision
+			FROM user_affiliate_ledger l
+			WHERE l.source_order_id = $1
+			  AND l.action = 'accrue'
+			  AND l.unlock_consume_required IS NOT NULL
+			FOR UPDATE
+		`, orderID)
+		if qErr != nil {
+			return fmt.Errorf("query frozen rebates: %w", qErr)
+		}
+		var targets []frozenRow
+		for rows.Next() {
+			var fr frozenRow
+			if sErr := rows.Scan(&fr.id, &fr.userID, &fr.amount); sErr != nil {
+				_ = rows.Close()
+				return fmt.Errorf("scan frozen rebate row: %w", sErr)
+			}
+			targets = append(targets, fr)
+		}
+		_ = rows.Close()
+		if rErr := rows.Err(); rErr != nil {
+			return fmt.Errorf("iterate frozen rebates: %w", rErr)
+		}
+		if len(targets) == 0 {
+			return nil
+		}
+
+		for _, t := range targets {
+			// 将 ledger 条目标记为已失效（清空解冻条件，写入 void action）
+			if _, dErr := txClient.ExecContext(txCtx, `
+				UPDATE user_affiliate_ledger
+				SET unlock_consume_required = NULL,
+				    unlock_consume_baseline  = NULL,
+				    updated_at               = NOW()
+				WHERE id = $1
+			`, t.id); dErr != nil {
+				return fmt.Errorf("void ledger entry %d: %w", t.id, dErr)
+			}
+			// 从邀请人冻结额度中扣回
+			if _, dErr := txClient.ExecContext(txCtx, `
+				UPDATE user_affiliates
+				SET aff_frozen_quota  = GREATEST(aff_frozen_quota - $1, 0),
+				    aff_history_quota = GREATEST(aff_history_quota - $1, 0),
+				    updated_at        = NOW()
+				WHERE user_id = $2
+			`, t.amount, t.userID); dErr != nil {
+				return fmt.Errorf("deduct frozen quota for user %d: %w", t.userID, dErr)
+			}
+			// 记录失效流水，便于审计
+			if _, iErr := txClient.ExecContext(txCtx, `
+				INSERT INTO user_affiliate_ledger
+				    (user_id, action, amount, source_order_id, created_at, updated_at)
+				VALUES ($1, 'void', $2, $3, NOW(), NOW())
+			`, t.userID, t.amount, orderID); iErr != nil {
+				return fmt.Errorf("insert void ledger entry: %w", iErr)
+			}
+			voided++
+			amount += t.amount
+		}
+		return nil
+	})
+	return voided, amount, err
 }
 
 // nullableArg unwraps a *float64 into an interface{} suitable for SQL parameter

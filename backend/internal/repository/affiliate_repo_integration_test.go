@@ -203,6 +203,263 @@ VALUES ($1, $2, 0, 0, NOW(), NOW())`, u.ID, affCode)
 	require.InDelta(t, 3.21, persistedBalance, 1e-9)
 }
 
+// makeThawFixture creates a minimal test universe for thaw-logic tests:
+// an inviter, an invitee, their user_affiliates rows, and a single frozen
+// ledger entry with the given unlock_consume_required and baseline.
+// Returns the inviter user, invitee user, and the ledger entry ID.
+func makeThawFixture(
+	t *testing.T,
+	ctx context.Context,
+	client *dbent.Client,
+	inviterFrozenQuota float64,
+	unlockConsumeRequired float64,
+	unlockConsumeBaseline float64,
+) (inviter *service.User, invitee *service.User, ledgerID int64) {
+	t.Helper()
+	ts := time.Now().UnixNano()
+
+	inviter = mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("thaw-inviter-%d@example.com", ts),
+		PasswordHash: "hash", Role: service.RoleUser,
+		Status: service.StatusActive, Concurrency: 5,
+	})
+	invitee = mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("thaw-invitee-%d@example.com", ts+1),
+		PasswordHash: "hash", Role: service.RoleUser,
+		Status: service.StatusActive, Concurrency: 5,
+	})
+
+	affCode := fmt.Sprintf("THAW%09d", ts%1_000_000_000)
+	_, err := client.ExecContext(ctx, `
+INSERT INTO user_affiliates (user_id, aff_code, inviter_id, aff_quota, aff_frozen_quota, aff_history_quota, created_at, updated_at)
+VALUES ($1, $2, NULL, 0, $3, $3, NOW(), NOW())
+ON CONFLICT (user_id) DO UPDATE SET aff_frozen_quota=$3, aff_history_quota=$3`,
+		inviter.ID, affCode, inviterFrozenQuota)
+	require.NoError(t, err)
+
+	_, err = client.ExecContext(ctx, `
+INSERT INTO user_affiliates (user_id, aff_code, inviter_id, created_at, updated_at)
+VALUES ($1, $2, $3, NOW(), NOW())
+ON CONFLICT (user_id) DO UPDATE SET inviter_id=$3`,
+		invitee.ID, fmt.Sprintf("INV%09d", ts%1_000_000_000), inviter.ID)
+	require.NoError(t, err)
+
+	var id int64
+	rows, err := client.QueryContext(ctx, `
+INSERT INTO user_affiliate_ledger
+    (user_id, action, amount, source_user_id, unlock_consume_required, unlock_consume_baseline, created_at, updated_at)
+VALUES ($1, 'accrue', $2, $3, $4, $5, NOW(), NOW())
+RETURNING id`,
+		inviter.ID, inviterFrozenQuota, invitee.ID, unlockConsumeRequired, unlockConsumeBaseline)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	require.True(t, rows.Next())
+	require.NoError(t, rows.Scan(&id))
+	ledgerID = id
+	return inviter, invitee, ledgerID
+}
+
+// TestThawFrozenQuota_BelowThreshold verifies that a ledger entry whose
+// invitee has not yet consumed enough stays frozen after ThawFrozenQuota.
+func TestThawFrozenQuota_BelowThreshold(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+
+	inviter, invitee, _ := makeThawFixture(t, txCtx, client, 15, 100, 0)
+
+	// invitee has consumed 99.99 — just short of the 100 threshold
+	_, err := client.ExecContext(txCtx,
+		"UPDATE users SET total_consumed = 99.99 WHERE id = $1", invitee.ID)
+	require.NoError(t, err)
+
+	thawed, err := thawFrozenQuotaTx(txCtx, client, inviter.ID)
+	require.NoError(t, err)
+	require.InDelta(t, 0.0, thawed, 1e-9, "must not thaw below threshold")
+
+	frozen := querySingleFloat(t, txCtx, client,
+		"SELECT aff_frozen_quota::double precision FROM user_affiliates WHERE user_id=$1", inviter.ID)
+	require.InDelta(t, 15.0, frozen, 1e-9, "frozen quota must be unchanged")
+}
+
+// TestThawFrozenQuota_AtExactThreshold verifies that consuming exactly the
+// threshold (not one cent more) triggers a thaw — the condition is >=.
+func TestThawFrozenQuota_AtExactThreshold(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+
+	inviter, invitee, ledgerID := makeThawFixture(t, txCtx, client, 15, 100, 0)
+
+	_, err := client.ExecContext(txCtx,
+		"UPDATE users SET total_consumed = 100 WHERE id = $1", invitee.ID)
+	require.NoError(t, err)
+
+	thawed, err := thawFrozenQuotaTx(txCtx, client, inviter.ID)
+	require.NoError(t, err)
+	require.InDelta(t, 15.0, thawed, 1e-9, "must thaw exactly at threshold")
+
+	quota := querySingleFloat(t, txCtx, client,
+		"SELECT aff_quota::double precision FROM user_affiliates WHERE user_id=$1", inviter.ID)
+	require.InDelta(t, 15.0, quota, 1e-9)
+
+	frozen := querySingleFloat(t, txCtx, client,
+		"SELECT aff_frozen_quota::double precision FROM user_affiliates WHERE user_id=$1", inviter.ID)
+	require.InDelta(t, 0.0, frozen, 1e-9)
+
+	// ledger entry's unlock_consume_required must be cleared
+	nullCount := querySingleInt(t, txCtx, client,
+		"SELECT COUNT(*) FROM user_affiliate_ledger WHERE id=$1 AND unlock_consume_required IS NULL", ledgerID)
+	require.Equal(t, 1, nullCount, "ledger unlock_consume_required must be NULL after thaw")
+}
+
+// TestThawFrozenQuota_Idempotent verifies that calling thaw a second time on
+// an already-thawed entry returns 0 and does not double-credit the quota.
+func TestThawFrozenQuota_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+
+	inviter, invitee, _ := makeThawFixture(t, txCtx, client, 15, 100, 0)
+
+	_, err := client.ExecContext(txCtx,
+		"UPDATE users SET total_consumed = 100 WHERE id = $1", invitee.ID)
+	require.NoError(t, err)
+
+	// First thaw
+	thawed1, err := thawFrozenQuotaTx(txCtx, client, inviter.ID)
+	require.NoError(t, err)
+	require.InDelta(t, 15.0, thawed1, 1e-9)
+
+	// Second thaw — must be idempotent
+	thawed2, err := thawFrozenQuotaTx(txCtx, client, inviter.ID)
+	require.NoError(t, err)
+	require.InDelta(t, 0.0, thawed2, 1e-9, "second thaw must return 0")
+
+	quota := querySingleFloat(t, txCtx, client,
+		"SELECT aff_quota::double precision FROM user_affiliates WHERE user_id=$1", inviter.ID)
+	require.InDelta(t, 15.0, quota, 1e-9, "quota must not be double-counted")
+}
+
+// TestThawFrozenQuota_BaselineIncrementSemantics verifies that the unlock
+// condition compares against the DELTA since accrue time, not against the
+// absolute total_consumed value.  An invitee who had already consumed 500
+// before this recharge should need to consume an additional 100 (reaching 600)
+// to unlock — the baseline snapshot prevents old consumption from counting.
+func TestThawFrozenQuota_BaselineIncrementSemantics(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+
+	// baseline=500 means: the invitee had already consumed 500 at accrue time.
+	// required=100 means: 100 new units needed on top of that.
+	inviter, invitee, _ := makeThawFixture(t, txCtx, client, 20, 100, 500)
+
+	// Set invitee's total to 500 — no new consumption yet.
+	_, err := client.ExecContext(txCtx,
+		"UPDATE users SET total_consumed = 500 WHERE id = $1", invitee.ID)
+	require.NoError(t, err)
+
+	thawed, err := thawFrozenQuotaTx(txCtx, client, inviter.ID)
+	require.NoError(t, err)
+	require.InDelta(t, 0.0, thawed, 1e-9, "must not thaw: delta is 0, need 100")
+
+	// Advance to 600 — delta of 100 meets the threshold exactly.
+	_, err = client.ExecContext(txCtx,
+		"UPDATE users SET total_consumed = 600 WHERE id = $1", invitee.ID)
+	require.NoError(t, err)
+
+	thawed, err = thawFrozenQuotaTx(txCtx, client, inviter.ID)
+	require.NoError(t, err)
+	require.InDelta(t, 20.0, thawed, 1e-9, "must thaw: delta is exactly 100")
+}
+
+// TestThawFrozenQuota_NullSourceUserID verifies that entries whose
+// source_user_id was set to NULL (invitee deleted, ON DELETE SET NULL) are
+// thawed immediately, preventing them from being locked forever.
+func TestThawFrozenQuota_NullSourceUserID(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+
+	inviter, _, ledgerID := makeThawFixture(t, txCtx, client, 7, 100, 0)
+
+	// Simulate invitee deletion by setting source_user_id to NULL.
+	_, err := client.ExecContext(txCtx,
+		"UPDATE user_affiliate_ledger SET source_user_id=NULL WHERE id=$1", ledgerID)
+	require.NoError(t, err)
+
+	thawed, err := thawFrozenQuotaTx(txCtx, client, inviter.ID)
+	require.NoError(t, err)
+	require.InDelta(t, 7.0, thawed, 1e-9, "NULL source_user_id must thaw immediately")
+
+	quota := querySingleFloat(t, txCtx, client,
+		"SELECT aff_quota::double precision FROM user_affiliates WHERE user_id=$1", inviter.ID)
+	require.InDelta(t, 7.0, quota, 1e-9)
+}
+
+// TestVoidFrozenRebateByOrderID verifies that VoidFrozenRebateByOrderID:
+//   - zeroes the frozen quota of the inviter for the matching order
+//   - writes a void ledger entry for audit
+//   - leaves already-thawed entries untouched
+//   - is idempotent on re-call
+func TestVoidFrozenRebateByOrderID(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+
+	inviter, invitee, _ := makeThawFixture(t, txCtx, client, 15, 100, 0)
+
+	// Insert a real payment order so the FK constraint is satisfied.
+	var orderID int64
+	rows, err := client.QueryContext(txCtx, `
+INSERT INTO payment_orders
+    (user_id, user_email, amount, pay_amount, status, expires_at, created_at, updated_at)
+VALUES ($1, $2, 100, 100, 'COMPLETED', NOW() + INTERVAL '1 hour', NOW(), NOW())
+RETURNING id`,
+		invitee.ID, invitee.Email)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	require.True(t, rows.Next())
+	require.NoError(t, rows.Scan(&orderID))
+	_ = rows.Close()
+
+	// Attach the real order ID to the ledger entry.
+	_, err = client.ExecContext(txCtx,
+		"UPDATE user_affiliate_ledger SET source_order_id=$1 WHERE user_id=$2 AND source_user_id=$3",
+		orderID, inviter.ID, invitee.ID)
+	require.NoError(t, err)
+
+	repo := NewAffiliateRepository(client, integrationDB)
+	voided, amount, err := repo.VoidFrozenRebateByOrderID(txCtx, orderID)
+	require.NoError(t, err)
+	require.Equal(t, 1, voided)
+	require.InDelta(t, 15.0, amount, 1e-9)
+
+	// Frozen quota must drop to zero.
+	frozen := querySingleFloat(t, txCtx, client,
+		"SELECT aff_frozen_quota::double precision FROM user_affiliates WHERE user_id=$1", inviter.ID)
+	require.InDelta(t, 0.0, frozen, 1e-9)
+
+	// A void ledger entry must be written.
+	voidCount := querySingleInt(t, txCtx, client,
+		"SELECT COUNT(*) FROM user_affiliate_ledger WHERE user_id=$1 AND action='void' AND source_order_id=$2",
+		inviter.ID, orderID)
+	require.Equal(t, 1, voidCount)
+
+	// Idempotent: calling again must void 0 entries (already cleared).
+	voided2, amount2, err := repo.VoidFrozenRebateByOrderID(txCtx, orderID)
+	require.NoError(t, err)
+	require.Equal(t, 0, voided2)
+	require.InDelta(t, 0.0, amount2, 1e-9)
+}
+
 // TestAffiliateRepository_AdminCustomCode covers the success path of admin
 // invite-code rewrite + reset within a shared test transaction:
 // - UpdateUserAffCode replaces aff_code, sets aff_code_custom=true, lookup works

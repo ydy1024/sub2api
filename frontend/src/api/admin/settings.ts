@@ -420,6 +420,7 @@ export interface SystemSettings {
   default_balance: number;
   affiliate_rebate_rate: number;
   affiliate_rebate_freeze_hours: number;
+  affiliate_rebate_unlock_consume_percent: number;
   affiliate_rebate_duration_days: number;
   affiliate_rebate_per_invitee_cap: number;
   affiliate_admin_recharge_enabled: boolean;
@@ -761,6 +762,7 @@ export interface UpdateSettingsRequest {
   default_balance?: number;
   affiliate_rebate_rate?: number;
   affiliate_rebate_freeze_hours?: number;
+  affiliate_rebate_unlock_consume_percent?: number;
   affiliate_rebate_duration_days?: number;
   affiliate_rebate_per_invitee_cap?: number;
   affiliate_admin_recharge_enabled?: boolean;

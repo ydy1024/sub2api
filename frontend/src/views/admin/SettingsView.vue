@@ -7355,18 +7355,22 @@
 
               <div>
                 <label class="input-label">
-                  {{ t('admin.settings.features.affiliate.freezeHours') }}
+                  {{ t('admin.settings.features.affiliate.unlockConsumePercent') }}
                 </label>
-                <input
-                  v-model.number="form.affiliate_rebate_freeze_hours"
-                  type="number"
-                  step="1"
-                  min="0"
-                  max="720"
-                  class="input"
-                />
+                <div class="relative">
+                  <input
+                    v-model.number="form.affiliate_rebate_unlock_consume_percent"
+                    type="number"
+                    step="1"
+                    min="0"
+                    max="100"
+                    class="input pr-8"
+                    placeholder="100"
+                  />
+                  <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">%</span>
+                </div>
                 <p class="mt-1 text-xs text-gray-400">
-                  {{ t('admin.settings.features.affiliate.freezeHoursDesc') }}
+                  {{ t('admin.settings.features.affiliate.unlockConsumePercentDesc') }}
                 </p>
               </div>
 
@@ -9551,6 +9555,7 @@ const form = reactive<SettingsForm>({
   account_scheduling_thresholds: normalizeAccountSchedulingThresholdsMap(),
   affiliate_rebate_rate: 20,
   affiliate_rebate_freeze_hours: 0,
+  affiliate_rebate_unlock_consume_percent: 100,
   affiliate_rebate_duration_days: 0,
   affiliate_rebate_per_invitee_cap: 0,
   affiliate_admin_recharge_enabled: false,
@@ -11183,6 +11188,16 @@ async function saveSettings() {
         Math.max(0, Number(form.affiliate_rebate_rate) || 0),
       ),
       affiliate_rebate_freeze_hours: Math.max(0, Math.min(720, Number(form.affiliate_rebate_freeze_hours) || 0)),
+      // 空值/非法值回退 100 而非 0：0 表示「不冻结」，不应因输入为空被静默关闭。
+      affiliate_rebate_unlock_consume_percent: Math.max(
+        0,
+        Math.min(
+          100,
+          Number.isFinite(Number(form.affiliate_rebate_unlock_consume_percent))
+            ? Number(form.affiliate_rebate_unlock_consume_percent)
+            : 100,
+        ),
+      ),
       affiliate_rebate_duration_days: Math.max(0, Math.min(3650, Math.floor(Number(form.affiliate_rebate_duration_days) || 0))),
       affiliate_rebate_per_invitee_cap: Math.max(0, Number(form.affiliate_rebate_per_invitee_cap) || 0),
       affiliate_admin_recharge_enabled: form.affiliate_admin_recharge_enabled,

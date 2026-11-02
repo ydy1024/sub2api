@@ -616,6 +616,11 @@ func (s *PaymentService) markRefundOk(ctx context.Context, p *RefundPlan) (*Refu
 		return nil, fmt.Errorf("mark refund: %w", err)
 	}
 	s.writeAuditLog(ctx, p.OrderID, "REFUND_SUCCESS", "admin", map[string]any{"refundAmount": p.RefundAmount, "reason": p.Reason, "balanceDeducted": p.BalanceToDeduct, "force": p.Force})
+	// 撤销由该订单产生的仍处于冻结状态的返利：被邀请人退款后无法再消费到解冻门槛，
+	// 冻结返利永远无法解冻，此处将其失效，避免邀请人看到永远无法兑现的冻结额度。
+	if s.affiliateService != nil {
+		s.affiliateService.VoidFrozenRebateForOrder(ctx, p.OrderID)
+	}
 	return &RefundResult{Success: true, BalanceDeducted: p.BalanceToDeduct, SubDaysDeducted: p.SubDaysToDeduct}, nil
 }
 
@@ -640,6 +645,10 @@ func (s *PaymentService) markRefundOkTx(ctx context.Context, client *dbent.Clien
 		SetOperator("admin").
 		Save(ctx); err != nil {
 		return nil, fmt.Errorf("write refund audit: %w", err)
+	}
+	// 撤销由该订单产生的仍处于冻结状态的返利（fire-and-forget，不阻断退款流程）。
+	if s.affiliateService != nil {
+		s.affiliateService.VoidFrozenRebateForOrder(ctx, p.OrderID)
 	}
 	return &RefundResult{Success: true, BalanceDeducted: p.BalanceToDeduct, SubDaysDeducted: p.SubDaysToDeduct}, nil
 }

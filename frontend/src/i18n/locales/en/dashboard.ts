@@ -678,7 +678,7 @@ export default {
       invitedUsers: 'Invited Users',
       availableQuota: 'Available Rebate Quota',
       frozenQuota: 'Frozen',
-      frozenQuotaHint: 'Recently earned rebates pending release',
+      frozenQuotaHint: 'Released once your invitee uses up their recharged credit',
       totalQuota: 'Historical Rebate Quota'
     },
     transfer: {
@@ -704,7 +704,7 @@ export default {
       line1: 'Share your affiliate code or invite link with new users.',
       line2: 'When invitees recharge, you receive {rate} of the recharge as rebate quota.',
       line3: 'Transfer rebate quota to balance at any time.',
-      line4: 'Newly earned rebates may have a waiting period before they can be transferred.'
+      line4: 'Newly earned rebates are frozen until your invitee consumes the matching recharged credit, then unlock automatically.'
     }
   },
 

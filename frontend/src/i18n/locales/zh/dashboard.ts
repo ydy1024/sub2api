@@ -682,7 +682,7 @@ export default {
       invitedUsers: '邀请人数',
       availableQuota: '可转返利额度',
       frozenQuota: '冻结中',
-      frozenQuotaHint: '新产生的返利正在冻结期中',
+      frozenQuotaHint: '待被邀请人用完其充值额度后自动解冻',
       totalQuota: '历史返利额度'
     },
     transfer: {
@@ -708,7 +708,7 @@ export default {
       line1: '将邀请码或邀请链接分享给新用户。',
       line2: '被邀请用户充值后，你可获得 {rate} 的返利额度。',
       line3: '返利额度可随时转入账户余额。',
-      line4: '新产生的返利需要经过冻结期后才能提现。'
+      line4: '新产生的返利会先进入冻结，待被邀请人消费完对应的充值额度后自动解冻，即可转入余额。'
     }
   },
 

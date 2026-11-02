@@ -391,7 +391,7 @@ func (r *oauthEmailAffiliateRepoStub) BindInviter(_ context.Context, userID, inv
 	return true, nil
 }
 
-func (r *oauthEmailAffiliateRepoStub) AccrueQuota(context.Context, int64, int64, float64, int, *int64) (bool, error) {
+func (r *oauthEmailAffiliateRepoStub) AccrueQuota(context.Context, int64, int64, float64, float64, *int64) (bool, error) {
 	panic("unexpected AccrueQuota call")
 }
 
@@ -405,6 +405,10 @@ func (r *oauthEmailAffiliateRepoStub) ThawFrozenQuota(context.Context, int64) (f
 
 func (r *oauthEmailAffiliateRepoStub) TransferQuotaToBalance(context.Context, int64) (float64, float64, error) {
 	panic("unexpected TransferQuotaToBalance call")
+}
+
+func (r *oauthEmailAffiliateRepoStub) VoidFrozenRebateByOrderID(context.Context, int64) (int, float64, error) {
+	panic("unexpected VoidFrozenRebateByOrderID call")
 }
 
 func (r *oauthEmailAffiliateRepoStub) ListInvitees(context.Context, int64, int) ([]service.AffiliateInvitee, error) {

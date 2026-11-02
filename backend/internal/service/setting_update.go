@@ -372,6 +372,8 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 		settings.AffiliateRebateFreezeHours = AffiliateRebateFreezeHoursMax
 	}
 	updates[SettingKeyAffiliateRebateFreezeHours] = strconv.Itoa(settings.AffiliateRebateFreezeHours)
+	settings.AffiliateRebateUnlockConsumePercent = clampAffiliateUnlockConsumePercent(settings.AffiliateRebateUnlockConsumePercent)
+	updates[SettingKeyAffiliateRebateUnlockConsumePercent] = strconv.FormatFloat(settings.AffiliateRebateUnlockConsumePercent, 'f', -1, 64)
 	if settings.AffiliateRebateDurationDays < 0 {
 		settings.AffiliateRebateDurationDays = AffiliateRebateDurationDaysDefault
 	}

@@ -356,6 +356,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.AffiliateRebateFreezeHours != after.AffiliateRebateFreezeHours {
 		changed = append(changed, "affiliate_rebate_freeze_hours")
 	}
+	if before.AffiliateRebateUnlockConsumePercent != after.AffiliateRebateUnlockConsumePercent {
+		changed = append(changed, "affiliate_rebate_unlock_consume_percent")
+	}
 	if before.AffiliateRebateDurationDays != after.AffiliateRebateDurationDays {
 		changed = append(changed, "affiliate_rebate_duration_days")
 	}

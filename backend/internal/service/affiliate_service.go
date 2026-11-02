@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math"
 	"strings"
 	"time"
@@ -98,10 +99,20 @@ type AffiliateRepository interface {
 	EnsureUserAffiliate(ctx context.Context, userID int64) (*AffiliateSummary, error)
 	GetAffiliateByCode(ctx context.Context, code string) (*AffiliateSummary, error)
 	BindInviter(ctx context.Context, userID, inviterID int64) (bool, error)
-	AccrueQuota(ctx context.Context, inviterID, inviteeUserID int64, amount float64, freezeHours int, sourceOrderID *int64) (bool, error)
+	// AccrueQuota 计提返利。unlockConsumeRequired > 0 时返利进入冻结，
+	// 需被邀请人（inviteeUserID）在计提后再消费满该金额才解冻；<= 0 表示立即可用。
+	AccrueQuota(ctx context.Context, inviterID, inviteeUserID int64, amount float64, unlockConsumeRequired float64, sourceOrderID *int64) (bool, error)
 	GetAccruedRebateFromInvitee(ctx context.Context, inviterID, inviteeUserID int64) (float64, error)
 	ThawFrozenQuota(ctx context.Context, userID int64) (float64, error)
 	TransferQuotaToBalance(ctx context.Context, userID int64) (float64, float64, error)
+	// VoidFrozenRebateByOrderID 撤销由指定充值订单产生的仍处于冻结状态的返利。
+	// 已解冻的条目不受影响——解冻后的钱已记入邀请人可提现额度，不追回。
+	// 设计用于退款场景：被邀请人退款后无法再消费到解冻门槛，冻结返利永远无法解冻，
+	// 调用此方法可将其标记为失效，避免邀请人看到永远无法兑现的冻结余额。
+	// orderID 对应 payment_orders.id（即 user_affiliate_ledger.source_order_id）。
+	// 幂等：同一 orderID 多次调用安全，已失效条目不会重复处理。
+	// 返回撤销的条目数和被撤销的总金额。
+	VoidFrozenRebateByOrderID(ctx context.Context, orderID int64) (voided int, amount float64, err error)
 	ListInvitees(ctx context.Context, inviterID int64, limit int) ([]AffiliateInvitee, error)
 
 	// 管理端：用户级专属配置
@@ -371,12 +382,17 @@ func (s *AffiliateService) AccrueInviteRebateForOrder(ctx context.Context, invit
 		}
 	}
 
-	var freezeHours int
+	// 冻结门槛：被邀请人需消费掉本次充值额度的 unlockPercent%，返利才解冻。
+	// 注意基数是充值额（baseRechargeAmount），不是返利额。
+	unlockConsumeRequired := 0.0
 	if s.settingService != nil {
-		freezeHours = s.settingService.GetAffiliateRebateFreezeHours(ctx)
+		unlockPercent := s.settingService.GetAffiliateRebateUnlockConsumePercent(ctx)
+		if unlockPercent > 0 {
+			unlockConsumeRequired = roundTo(baseRechargeAmount*(unlockPercent/100), 8)
+		}
 	}
 
-	applied, err := s.repo.AccrueQuota(ctx, *inviteeSummary.InviterID, inviteeUserID, rebate, freezeHours, sourceOrderID)
+	applied, err := s.repo.AccrueQuota(ctx, *inviteeSummary.InviterID, inviteeUserID, rebate, unlockConsumeRequired, sourceOrderID)
 	if err != nil {
 		return 0, err
 	}
@@ -384,6 +400,27 @@ func (s *AffiliateService) AccrueInviteRebateForOrder(ctx context.Context, invit
 		return 0, nil
 	}
 	return rebate, nil
+}
+
+// VoidFrozenRebateForOrder 撤销由指定订单产生的仍处于冻结状态的返利。
+// 用于退款场景：被邀请人退款后无法再消费到解冻门槛，冻结返利永远无法解冻，
+// 调用此方法将其失效，避免邀请人看到永远无法兑现的冻结余额。
+// 已解冻的条目不受影响——钱已记入邀请人可提现额度，不追回。
+// 返利功能未启用时，静默跳过（不报错）。
+func (s *AffiliateService) VoidFrozenRebateForOrder(ctx context.Context, orderID int64) {
+	if s == nil || s.repo == nil {
+		return
+	}
+	voided, amount, err := s.repo.VoidFrozenRebateByOrderID(ctx, orderID)
+	if err != nil {
+		slog.Warn("affiliate: failed to void frozen rebate on refund",
+			"orderID", orderID, "error", err)
+		return
+	}
+	if voided > 0 {
+		slog.Info("affiliate: voided frozen rebate entries on refund",
+			"orderID", orderID, "entries", voided, "totalAmount", amount)
+	}
 }
 
 // resolveRebateRatePercent returns the inviter's exclusive rate when set,

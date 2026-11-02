@@ -176,6 +176,11 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 		if err := incrementUsageBillingSubscription(ctx, tx, *cmd.SubscriptionID, cmd.SubscriptionCost); err != nil {
 			return err
 		}
+		// 订阅用量不扣余额，但同样是「已消费的价值」。若不计入 total_consumed，
+		// 由订阅订单产生的邀请返利将永远无法满足解冻条件。
+		if err := incrementUsageBillingConsumed(ctx, tx, cmd.UserID, cmd.SubscriptionCost); err != nil {
+			return err
+		}
 	}
 
 	if cmd.BalanceCost > 0 {
@@ -240,11 +245,30 @@ func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscrip
 	return service.ErrSubscriptionNotFound
 }
 
+// incrementUsageBillingConsumed 累加用户的单调消费计数器。
+// 该计数器用于邀请返利的解冻判定（被邀请人是否已用完其充值额度），
+// 因此不区分资金来源，只反映「已消费的价值」。
+// 用户不存在时静默跳过：消费计数不应阻断计费主流程。
+func incrementUsageBillingConsumed(ctx context.Context, tx *sql.Tx, userID int64, amount float64) error {
+	if amount <= 0 || userID <= 0 {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `
+		UPDATE users
+		SET total_consumed = COALESCE(total_consumed, 0) + $1,
+			updated_at = NOW()
+		WHERE id = $2 AND deleted_at IS NULL
+	`, amount, userID)
+	return err
+}
+
 func deductUsageBillingBalance(ctx context.Context, tx *sql.Tx, userID int64, amount float64) (float64, bool, error) {
+	// total_consumed 单调累加：邀请返利的解冻条件依赖它判断「充值额度是否用完」。
 	var newBalance float64
 	err := tx.QueryRowContext(ctx, `
 		UPDATE users
 		SET balance = balance - $1,
+			total_consumed = COALESCE(total_consumed, 0) + $1,
 			updated_at = NOW()
 		WHERE id = $2 AND deleted_at IS NULL AND balance >= $1
 		RETURNING balance
@@ -259,6 +283,7 @@ func deductUsageBillingBalance(ctx context.Context, tx *sql.Tx, userID int64, am
 	err = tx.QueryRowContext(ctx, `
 		UPDATE users
 		SET balance = balance - $1,
+			total_consumed = COALESCE(total_consumed, 0) + $1,
 			updated_at = NOW()
 		WHERE id = $2 AND deleted_at IS NULL
 		RETURNING balance
@@ -306,6 +331,8 @@ func captureUsageBillingBatchImageBalance(ctx context.Context, tx *sql.Tx, cmd *
 	if cmd.ActualAmount-cmd.HoldAmount > 0.00000001 {
 		return nil, service.ErrBatchImageSettlementCostExceedsHold
 	}
+	// 结算实际消费额 ActualAmount 计入 total_consumed（预留时已从 balance 移入 frozen，
+	// 此处才是真正的消费落账点）。
 	var balance, frozen float64
 	err := tx.QueryRowContext(ctx, `
 		UPDATE users
@@ -313,6 +340,7 @@ func captureUsageBillingBatchImageBalance(ctx context.Context, tx *sql.Tx, cmd *
 				+ CASE WHEN $1 > $2 THEN $1 - $2 ELSE 0 END
 				- CASE WHEN $2 > $1 THEN $2 - $1 ELSE 0 END,
 			frozen_balance = COALESCE(frozen_balance, 0) - $1,
+			total_consumed = COALESCE(total_consumed, 0) + GREATEST($2, 0),
 			updated_at = NOW()
 		WHERE id = $3 AND deleted_at IS NULL AND COALESCE(frozen_balance, 0) >= $1
 		RETURNING balance, frozen_balance

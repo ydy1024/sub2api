@@ -868,27 +868,35 @@ func (r *userRepository) ApplyRedeemBalanceAdjustment(ctx context.Context, id in
 // DeductBalance 扣除用户余额
 // 透支策略：允许余额变为负数，确保当前请求能够完成
 // 中间件会阻止余额 <= 0 的用户发起后续请求
+// total_consumed 单调累加：邀请返利解冻依赖它判断「充值额度是否用完」。
+// 该列由 SQL 迁移添加、不在 ent schema 中，因此这里用原生 SQL 而非 ent builder。
 func (r *userRepository) DeductBalance(ctx context.Context, id int64, amount float64) error {
 	client := clientFromContext(ctx, r.client)
-	n, err := client.User.Update().
-		Where(dbuser.IDEQ(id), dbuser.BalanceGTE(amount)).
-		AddBalance(-amount).
-		Save(ctx)
+	const deductSQL = `
+		UPDATE users
+		SET balance = balance - $1,
+			total_consumed = COALESCE(total_consumed, 0) + $1,
+			updated_at = NOW()
+		WHERE id = $2 AND deleted_at IS NULL AND balance >= $1`
+	res, err := client.ExecContext(ctx, deductSQL, amount, id)
 	if err != nil {
 		return err
 	}
-	if n > 0 {
+	if n, _ := res.RowsAffected(); n > 0 {
 		return nil
 	}
 
-	n, err = client.User.Update().
-		Where(dbuser.IDEQ(id)).
-		AddBalance(-amount).
-		Save(ctx)
+	const overdraftSQL = `
+		UPDATE users
+		SET balance = balance - $1,
+			total_consumed = COALESCE(total_consumed, 0) + $1,
+			updated_at = NOW()
+		WHERE id = $2 AND deleted_at IS NULL`
+	res, err = client.ExecContext(ctx, overdraftSQL, amount, id)
 	if err != nil {
 		return err
 	}
-	if n == 0 {
+	if n, _ := res.RowsAffected(); n == 0 {
 		return service.ErrUserNotFound
 	}
 	return nil

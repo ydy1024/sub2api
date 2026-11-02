@@ -12,7 +12,10 @@ func TestAffiliateUserOverviewSQLIncludesMaturedFrozenQuota(t *testing.T) {
 	query := strings.Join(strings.Fields(affiliateUserOverviewSQL), " ")
 
 	require.Contains(t, query, "ua.aff_quota + COALESCE(matured.matured_frozen_quota, 0)")
-	require.Contains(t, query, "frozen_until <= NOW()")
+	// 解冻条件已从时间（frozen_until）改为消费达标（unlock_consume_required）。
+	require.Contains(t, query, "l.unlock_consume_required IS NOT NULL")
+	require.Contains(t, query, ">= l.unlock_consume_required")
+	require.NotContains(t, query, "frozen_until")
 }
 
 func TestAffiliateRecordQueriesUseLedgerAuditFields(t *testing.T) {

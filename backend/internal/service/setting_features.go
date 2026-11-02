@@ -115,6 +115,10 @@ func (s *SettingService) GetAffiliateRebateRatePercent(ctx context.Context) floa
 
 // GetAffiliateRebateFreezeHours 返回返利冻结期（小时）。
 // 返回 0 表示不冻结（向后兼容）。
+//
+// Deprecated: 解冻条件已改为「被邀请人消费完其充值额度」，见
+// GetAffiliateRebateUnlockConsumePercent。该方法仅为读取存量配置保留，
+// 不再参与解冻判定。
 func (s *SettingService) GetAffiliateRebateFreezeHours(ctx context.Context) int {
 	raw, err := s.settingRepo.GetValue(ctx, SettingKeyAffiliateRebateFreezeHours)
 	if err != nil {
@@ -128,6 +132,21 @@ func (s *SettingService) GetAffiliateRebateFreezeHours(ctx context.Context) int 
 		return AffiliateRebateFreezeHoursMax
 	}
 	return hours
+}
+
+// GetAffiliateRebateUnlockConsumePercent 返回返利解冻所需的消费比例（百分比）。
+// 被邀请人需消费掉其本次充值额度的该比例后，邀请人的返利才解冻。
+// 返回 0 表示不冻结（计提即可用）。
+func (s *SettingService) GetAffiliateRebateUnlockConsumePercent(ctx context.Context) float64 {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyAffiliateRebateUnlockConsumePercent)
+	if err != nil {
+		return AffiliateRebateUnlockConsumePercentDefault
+	}
+	pct, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(pct) || math.IsInf(pct, 0) {
+		return AffiliateRebateUnlockConsumePercentDefault
+	}
+	return clampAffiliateUnlockConsumePercent(pct)
 }
 
 // GetAffiliateRebateDurationDays 返回返利有效期（天）。

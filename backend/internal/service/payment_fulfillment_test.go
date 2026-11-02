@@ -88,11 +88,11 @@ func (p paymentFulfillmentTestProvider) Refund(ctx context.Context, req payment.
 }
 
 type paymentFulfillmentAffiliateAccrueCall struct {
-	inviterID     int64
-	inviteeUserID int64
-	amount        float64
-	freezeHours   int
-	sourceOrderID *int64
+	inviterID             int64
+	inviteeUserID         int64
+	amount                float64
+	unlockConsumeRequired float64
+	sourceOrderID         *int64
 }
 
 type paymentFulfillmentAffiliateRepoStub struct {
@@ -122,18 +122,18 @@ func (r *paymentFulfillmentAffiliateRepoStub) BindInviter(context.Context, int64
 	panic("unexpected BindInviter call")
 }
 
-func (r *paymentFulfillmentAffiliateRepoStub) AccrueQuota(_ context.Context, inviterID, inviteeUserID int64, amount float64, freezeHours int, sourceOrderID *int64) (bool, error) {
+func (r *paymentFulfillmentAffiliateRepoStub) AccrueQuota(_ context.Context, inviterID, inviteeUserID int64, amount float64, unlockConsumeRequired float64, sourceOrderID *int64) (bool, error) {
 	var sourceCopy *int64
 	if sourceOrderID != nil {
 		v := *sourceOrderID
 		sourceCopy = &v
 	}
 	r.accrueCalls = append(r.accrueCalls, paymentFulfillmentAffiliateAccrueCall{
-		inviterID:     inviterID,
-		inviteeUserID: inviteeUserID,
-		amount:        amount,
-		freezeHours:   freezeHours,
-		sourceOrderID: sourceCopy,
+		inviterID:             inviterID,
+		inviteeUserID:         inviteeUserID,
+		amount:                amount,
+		unlockConsumeRequired: unlockConsumeRequired,
+		sourceOrderID:         sourceCopy,
 	})
 	return true, nil
 }
@@ -148,6 +148,10 @@ func (r *paymentFulfillmentAffiliateRepoStub) ThawFrozenQuota(context.Context, i
 
 func (r *paymentFulfillmentAffiliateRepoStub) TransferQuotaToBalance(context.Context, int64) (float64, float64, error) {
 	panic("unexpected TransferQuotaToBalance call")
+}
+
+func (r *paymentFulfillmentAffiliateRepoStub) VoidFrozenRebateByOrderID(context.Context, int64) (int, float64, error) {
+	return 0, 0, nil
 }
 
 func (r *paymentFulfillmentAffiliateRepoStub) ListInvitees(context.Context, int64, int) ([]AffiliateInvitee, error) {
@@ -1163,9 +1167,9 @@ func TestExecuteSubscriptionFulfillmentAppliesAffiliateRebate(t *testing.T) {
 		},
 	}
 	settingSvc := NewSettingService(&paymentFulfillmentSettingRepoStub{values: map[string]string{
-		SettingKeyAffiliateEnabled:           "true",
-		SettingKeyAffiliateRebateRate:        "15",
-		SettingKeyAffiliateRebateFreezeHours: "0",
+		SettingKeyAffiliateEnabled:                    "true",
+		SettingKeyAffiliateRebateRate:                 "15",
+		SettingKeyAffiliateRebateUnlockConsumePercent: "100",
 	}}, nil)
 	subRepo := newSubscriptionUserSubRepoStub()
 	subscriptionSvc := NewSubscriptionService(&subscriptionGroupRepoStub{
@@ -1188,6 +1192,8 @@ func TestExecuteSubscriptionFulfillmentAppliesAffiliateRebate(t *testing.T) {
 	require.Equal(t, inviterID, affiliateRepo.accrueCalls[0].inviterID)
 	require.Equal(t, user.ID, affiliateRepo.accrueCalls[0].inviteeUserID)
 	require.InDelta(t, 1.4985, affiliateRepo.accrueCalls[0].amount, 0.00000001)
+	// 解冻门槛以充值额为基数（9.99 × 100%），而非返利额。
+	require.InDelta(t, 9.99, affiliateRepo.accrueCalls[0].unlockConsumeRequired, 0.00000001)
 	require.NotNil(t, affiliateRepo.accrueCalls[0].sourceOrderID)
 	require.Equal(t, order.ID, *affiliateRepo.accrueCalls[0].sourceOrderID)
 	require.Equal(t, 1, subRepo.createCalls)

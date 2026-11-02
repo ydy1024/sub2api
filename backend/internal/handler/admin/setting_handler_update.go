@@ -174,6 +174,7 @@ type UpdateSettingsRequest struct {
 	DefaultBalance                            float64                           `json:"default_balance"`
 	AffiliateRebateRate                       *float64                          `json:"affiliate_rebate_rate"`
 	AffiliateRebateFreezeHours                *int                              `json:"affiliate_rebate_freeze_hours"`
+	AffiliateRebateUnlockConsumePercent       *float64                          `json:"affiliate_rebate_unlock_consume_percent"`
 	AffiliateRebateDurationDays               *int                              `json:"affiliate_rebate_duration_days"`
 	AffiliateRebatePerInviteeCap              *float64                          `json:"affiliate_rebate_per_invitee_cap"`
 	AdminRechargeRebateEnabled                *bool                             `json:"affiliate_admin_recharge_enabled"`
@@ -577,6 +578,16 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	}
 	if affiliateRebateFreezeHours > service.AffiliateRebateFreezeHoursMax {
 		affiliateRebateFreezeHours = service.AffiliateRebateFreezeHoursMax
+	}
+	affiliateRebateUnlockConsumePercent := previousSettings.AffiliateRebateUnlockConsumePercent
+	if req.AffiliateRebateUnlockConsumePercent != nil {
+		affiliateRebateUnlockConsumePercent = *req.AffiliateRebateUnlockConsumePercent
+	}
+	if affiliateRebateUnlockConsumePercent < service.AffiliateRebateUnlockConsumePercentMin {
+		affiliateRebateUnlockConsumePercent = service.AffiliateRebateUnlockConsumePercentMin
+	}
+	if affiliateRebateUnlockConsumePercent > service.AffiliateRebateUnlockConsumePercentMax {
+		affiliateRebateUnlockConsumePercent = service.AffiliateRebateUnlockConsumePercentMax
 	}
 	affiliateRebateDurationDays := previousSettings.AffiliateRebateDurationDays
 	if req.AffiliateRebateDurationDays != nil {
@@ -1632,6 +1643,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		DefaultBalance:                         req.DefaultBalance,
 		AffiliateRebateRate:                    affiliateRebateRate,
 		AffiliateRebateFreezeHours:             affiliateRebateFreezeHours,
+		AffiliateRebateUnlockConsumePercent:    affiliateRebateUnlockConsumePercent,
 		AffiliateRebateDurationDays:            affiliateRebateDurationDays,
 		AffiliateRebatePerInviteeCap:           affiliateRebatePerInviteeCap,
 		AdminRechargeRebateEnabled:             adminRechargeRebateEnabled,
@@ -2260,6 +2272,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		DefaultBalance:                                         updatedSettings.DefaultBalance,
 		AffiliateRebateRate:                                    updatedSettings.AffiliateRebateRate,
 		AffiliateRebateFreezeHours:                             updatedSettings.AffiliateRebateFreezeHours,
+		AffiliateRebateUnlockConsumePercent:                    updatedSettings.AffiliateRebateUnlockConsumePercent,
 		AffiliateRebateDurationDays:                            updatedSettings.AffiliateRebateDurationDays,
 		AffiliateRebatePerInviteeCap:                           updatedSettings.AffiliateRebatePerInviteeCap,
 		AdminRechargeRebateEnabled:                             updatedSettings.AdminRechargeRebateEnabled,
