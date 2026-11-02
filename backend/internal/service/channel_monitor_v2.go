@@ -405,6 +405,18 @@ func (s *ChannelMonitorV2Service) hideThroughputForViewer(ctx context.Context, a
 	return s.settings.GetChannelMonitorRuntime(ctx).HideThroughput
 }
 
+func (s *ChannelMonitorV2Service) hideUserRankingForViewer(ctx context.Context, admin bool) bool {
+	if admin {
+		return false
+	}
+	// Missing reader keeps the current ranking tab visible. Unlike throughput,
+	// ranking is already public and must stay on until an operator turns it off.
+	if s == nil || s.settings == nil {
+		return false
+	}
+	return s.settings.GetChannelMonitorRuntime(ctx).HideUserRanking
+}
+
 func (s *ChannelMonitorV2Service) GetConfig(ctx context.Context) (*ChannelMonitorV2Config, error) {
 	return s.repo.GetConfig(ctx)
 }
@@ -651,6 +663,9 @@ func (s *ChannelMonitorV2Service) Users(ctx context.Context, filter ChannelMonit
 	cfg, err := s.getEnabledConfig(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if s.hideUserRankingForViewer(ctx, admin) {
+		return &ChannelMonitorV2List[ChannelMonitorV2UserRow]{Items: []ChannelMonitorV2UserRow{}}, nil
 	}
 	result, err := s.repo.GetUsers(ctx, filter, *cfg, admin)
 	if err != nil {
@@ -947,6 +962,9 @@ func ChannelMonitorV2HealthForWithThresholds(metrics ChannelMonitorV2Metric, thr
 	result := ChannelMonitorV2Health{
 		Overall: "unknown", ErrorRate: "unknown", TTFT: "unknown", Cache: "unknown",
 		MinimumSample: thresholds.MinimumSample, Thresholds: thresholds,
+	}
+	if metrics.RequestCount < result.MinimumSample {
+		return result
 	}
 
 	type scored struct {
