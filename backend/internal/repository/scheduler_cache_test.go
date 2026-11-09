@@ -20,6 +20,18 @@ func TestFilterSchedulerCredentialsKeepsSubscriptionPlanType(t *testing.T) {
 	require.NotContains(t, filtered, "refresh_token")
 }
 
+func TestFilterSchedulerCredentialsKeepsVideoAPIStyle(t *testing.T) {
+	filtered := filterSchedulerCredentials(map[string]any{
+		"api_key":                           "k",
+		"base_url":                          "https://api.popgo.site",
+		service.GrokMediaAPIStyleCredential: service.GrokMediaAPIStyleOpenAIVideo,
+	})
+
+	require.Equal(t, service.GrokMediaAPIStyleOpenAIVideo, filtered[service.GrokMediaAPIStyleCredential])
+	require.Equal(t, "https://api.popgo.site", filtered["base_url"])
+	require.Equal(t, "k", filtered["api_key"])
+}
+
 func TestFilterSchedulerCredentialsKeepsGeminiExplicitCacheKeys(t *testing.T) {
 	filtered := filterSchedulerCredentials(map[string]any{
 		"api_key":              "k",

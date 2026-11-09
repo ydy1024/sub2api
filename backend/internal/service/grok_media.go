@@ -34,7 +34,27 @@ const (
 
 	// Official xAI Imagine image-edit limit.
 	grokMediaMaxEditSourceImages = 3
+
+	// GrokMediaAPIStyleCredential selects the upstream async video protocol.
+	// "openai_videos" uses POST /v1/videos + GET /v1/videos/{id} instead of
+	// xAI's /v1/videos/generations protocol.
+	GrokMediaAPIStyleCredential  = "video_api_style"
+	GrokMediaAPIStyleOpenAIVideo = "openai_videos"
 )
+
+func usesOpenAIVideoMediaAPI(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	if strings.EqualFold(
+		strings.TrimSpace(account.GetCredential(GrokMediaAPIStyleCredential)),
+		GrokMediaAPIStyleOpenAIVideo,
+	) {
+		return true
+	}
+	configured, found := account.openAIEndpointCapabilitySet()
+	return found && configured[string(OpenAIEndpointCapabilityOpenAIVideo)]
+}
 
 func (e GrokMediaEndpoint) RequiresRequestBody() bool {
 	return !e.IsVideoLookupRequest()
@@ -50,6 +70,17 @@ func (e GrokMediaEndpoint) IsGenerationRequest() bool {
 	}
 	switch e {
 	case GrokMediaEndpointImagesGenerations, GrokMediaEndpointImagesEdits, GrokMediaEndpointVideosGenerations, GrokMediaEndpointVideosEdits, GrokMediaEndpointVideosExtensions:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e GrokMediaEndpoint) IsVideoRequest() bool {
+	switch e {
+	case GrokMediaEndpointVideosGenerations, GrokMediaEndpointVideosEdits,
+		GrokMediaEndpointVideosExtensions, GrokMediaEndpointVideoStatus,
+		GrokMediaEndpointVideoContent:
 		return true
 	default:
 		return false
@@ -134,6 +165,9 @@ func ParseGrokMediaRequest(contentType string, body []byte) GrokMediaRequestInfo
 	info.SizeTier = NormalizeImageBillingTierOrDefault(info.Size)
 	info.AspectRatio = strings.TrimSpace(info.AspectRatio)
 	info.ImageResolution = grokImagineImageResolution(info.ImageResolution)
+	if info.Resolution == "" {
+		info.Resolution = videoResolutionFromSize(info.Size)
+	}
 	info.Resolution = NormalizeVideoBillingResolutionOrDefault(info.Resolution)
 	info.DurationSeconds = NormalizeVideoBillingDurationSecondsOrDefault(info.DurationSeconds)
 	if info.N <= 0 {
@@ -153,6 +187,16 @@ func parseGrokMediaJSONRequest(body []byte, info *GrokMediaRequestInfo) {
 	assignGrokMediaResolution(strings.TrimSpace(gjson.GetBytes(body, "resolution").String()), info)
 	if duration := gjson.GetBytes(body, "duration"); duration.Exists() && duration.Type == gjson.Number {
 		info.DurationSeconds = int(duration.Int())
+	}
+	if seconds := gjson.GetBytes(body, "seconds"); seconds.Exists() {
+		switch seconds.Type {
+		case gjson.String:
+			if value, err := strconv.Atoi(strings.TrimSpace(seconds.String())); err == nil {
+				info.DurationSeconds = value
+			}
+		case gjson.Number:
+			info.DurationSeconds = int(seconds.Int())
+		}
 	}
 	if n := gjson.GetBytes(body, "n"); n.Exists() && n.Type == gjson.Number {
 		info.N = int(n.Int())
@@ -269,7 +313,7 @@ func parseGrokMediaMultipartRequest(contentType string, body []byte, info *GrokM
 			info.AspectRatio = value
 		case "resolution":
 			assignGrokMediaResolution(value, info)
-		case "duration":
+		case "duration", "seconds":
 			if duration, err := strconv.Atoi(value); err == nil {
 				info.DurationSeconds = duration
 			}
@@ -556,16 +600,28 @@ func StableGrokVideoBillingRequestID(taskRequestID string) string {
 // Request may include resolution ("480p"|"720p"|"1080p"); completed status does not
 // document a resolution field — bill resolution from the create-time request snapshot.
 
-// IsGrokVideoStatusBillable matches official success: status == "done" AND non-empty video.url.
-// pending / expired / failed, or done without a video URL, are not billable.
+// IsGrokVideoStatusBillable 接受 xAI done+video.url 和 OpenAI completed 视频对象。
+// 未完成或失败的任务不计费。
 func IsGrokVideoStatusBillable(statusBody []byte) bool {
 	if len(statusBody) == 0 || !gjson.ValidBytes(statusBody) {
 		return false
 	}
-	if !isOfficialGrokVideoStatusDone(statusBody) {
-		return false
+	status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(statusBody, "status").String()))
+	switch status {
+	case "done":
+		return strings.TrimSpace(gjson.GetBytes(statusBody, "video.url").String()) != ""
+	case "completed":
+		// OpenAI 的完成对象不要求 URL，文件通过 /videos/{id}/content 获取。
+		if strings.TrimSpace(gjson.GetBytes(statusBody, "id").String()) != "" {
+			return true
+		}
+		for _, path := range []string{"video_url", "metadata.url"} {
+			if strings.TrimSpace(gjson.GetBytes(statusBody, path).String()) != "" {
+				return true
+			}
+		}
 	}
-	return strings.TrimSpace(gjson.GetBytes(statusBody, "video.url").String()) != ""
+	return false
 }
 
 func isOfficialGrokVideoStatusDone(statusBody []byte) bool {
@@ -599,6 +655,18 @@ func ExtractGrokVideoBillingFromStatusBody(statusBody []byte, pending *GrokVideo
 				durationSeconds = int(v.Float())
 			}
 		}
+		if durationSeconds <= 0 {
+			for _, path := range []string{"seconds", "duration"} {
+				if value, err := strconv.Atoi(gjson.GetBytes(statusBody, path).String()); err == nil && value > 0 {
+					durationSeconds = value
+					break
+				}
+			}
+		}
+		resolution = strings.TrimSpace(gjson.GetBytes(statusBody, "resolution").String())
+		if resolution == "" {
+			resolution = videoResolutionFromSize(gjson.GetBytes(statusBody, "size").String())
+		}
 	}
 	if pending != nil {
 		if model == "" {
@@ -610,15 +678,13 @@ func ExtractGrokVideoBillingFromStatusBody(statusBody []byte, pending *GrokVideo
 		if upstreamModel == "" {
 			upstreamModel = pending.UpstreamModel
 		}
-		// Official status has no resolution — always take create request when available.
-		resolution = pending.VideoResolution
+		// 状态未回传分辨率时使用创建快照。
+		if resolution == "" {
+			resolution = pending.VideoResolution
+		}
 		if durationSeconds <= 0 {
 			durationSeconds = pending.VideoDurationSeconds
 		}
-	}
-	if model == "" {
-		// Official default video model family when status omits model.
-		model = "grok-imagine-video"
 	}
 	if billingModel == "" {
 		billingModel = model
@@ -658,7 +724,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	if account == nil {
 		return nil, fmt.Errorf("grok account is required")
 	}
-	if account.Platform != PlatformGrok {
+	if account.Platform != PlatformGrok && !usesOpenAIVideoMediaAPI(account) {
 		return nil, fmt.Errorf("account platform %s is not supported for grok media", account.Platform)
 	}
 
@@ -730,6 +796,9 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		proxyURL = account.Proxy.URL()
 	}
 	upstreamStart := time.Now()
+	if err := markVideoSubmissionStarted(ctx); err != nil {
+		return nil, err
+	}
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
@@ -738,6 +807,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	defer func() { _ = resp.Body.Close() }()
 
 	requestIDHeader := firstNonEmpty(resp.Header.Get("x-request-id"), resp.Header.Get("xai-request-id"))
+	recordVideoSubmissionStatus(ctx, resp.StatusCode)
 	requestModel := requestInfo.Model
 	if resp.StatusCode >= 400 {
 		return s.handleGrokMediaErrorResponse(ctx, resp, c, account, requestIDHeader, requestModel)
@@ -765,8 +835,13 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 			grokMediaContentProxyURL(c, requestID),
 		)
 	}
-	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
 	usage := grokMediaUsageFromResponse(endpoint, requestInfo, respBody)
+	if endpoint.IsGenerationRequest() && endpoint.IsVideoRequest() {
+		if err := s.persistVideoTaskID(ctx, usage.ResponseID); err != nil {
+			return nil, err
+		}
+	}
+	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
 	resultModel := requestModel
 	resultBillingModel := requestModel
 	if endpoint == GrokMediaEndpointVideoStatus {
@@ -920,6 +995,7 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		ResponseHeaders: contentResp.Header.Clone(),
 		Duration:        time.Since(startTime),
 	}
+	result.Usage, _ = extractOpenAIUsageFromJSONBytes(statusBody)
 	if billed := ExtractGrokVideoBillingFromStatusBody(statusBody, nil, requestID); billed != nil {
 		result.ResponseID = firstNonEmpty(billed.ResponseID, strings.TrimSpace(requestID))
 		result.Model = billed.Model

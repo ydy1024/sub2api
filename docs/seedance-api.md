@@ -37,9 +37,11 @@ curl -X DELETE "$SUB2API_BASE_URL/api/v3/contents/generations/tasks/$TASK_ID" \
 ## 任务与计费
 
 - 查询和删除只能访问同一用户、同一 API Key、同一分组创建的任务，并始终使用原提交账号；不会转到其他账号查询。
-- 创建时不扣 token 用量。首次查询到 `succeeded` 后，根据上游 `usage.completion_tokens` 计费；重复查询由共享缓存声明和持久化用量去重共同保护。失败、排队及运行中的任务不计费。
-- Redis 保存任务绑定及创建时的模型快照，默认 24 小时。需保留 Redis 状态并在有效期内查询完成结果。当前不会后台轮询；只使用回调而不查询的任务不会自动结算。
-- 不开放上游的任务列表接口，防止共享账号的任务泄露给其他用户。删除遵循上游语义，不自动退款。
+- 标准计费模式在创建前持久化任务、价格快照并预留额度，后台每 15 秒扫描任务。查询到 `succeeded` 后，根据上游 `usage.completion_tokens` 幂等计费；不依赖客户端轮询，服务重启后继续恢复。明确失败或取消的任务释放预留。
+- Token 数量在生成结束前未知，因此预留当前可用余额（受 Key 剩余额度约束）；订阅预留当前最小剩余周期额度。结算后退回余额预留与实际费用的差额，实际费用高于预留时仍记录已发生的消费。Token 预留不是上游费用硬上限。
+- 数据库保存任务所有权，Redis 仅兼容升级前的旧任务。升级需要迁移 `250_video_billing_tasks.sql`；旧任务仍需在原 Redis 有效期内查询。
+- 不开放上游任务列表。删除前先检查并结算终态，未完成的任务返回 409，避免删除上游数据后无法结算。删除已完成任务不会退款。
 - 异步创建的上游错误不自动重试，以免重复创建付费任务。
+- 创建超时等不确定结果保留 `submitting` 状态和预留金额，日志记录内部任务 ID，需核对上游后处理。不会猜测创建失败并自动退款。
 
 协议依据：[火山官方 Go SDK](https://github.com/volcengine/volcengine-go-sdk/blob/master/service/arkruntime/model/content_generation.go)、[创建任务文档](https://www.volcengine.com/docs/82379/1520757)、[查询任务文档](https://www.volcengine.com/docs/82379/1521309)。

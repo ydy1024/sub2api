@@ -289,7 +289,7 @@ type OpenAIForwardResult struct {
 	ImageSizeBreakdown map[string]int
 	VideoCount         int
 	VideoResolution    string
-	// VideoDurationSeconds 是提交时请求的生成时长（xAI 按输出秒数计费），已归一化到 1-15 秒。
+	// VideoDurationSeconds 为实际生成秒数，状态未回传时使用创建参数。
 	VideoDurationSeconds int
 	// WebSearchCalls 是 Codex alpha/search 网页搜索调用次数（每次成功请求为 1）。
 	// 上游不返回 usage 字段，>0 时走按次计费（分组单价 × 次数 × 倍率）。
@@ -445,6 +445,8 @@ var ErrNoAvailableCompactAccounts = errors.New("no available accounts support /r
 
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
+	videoWorker           *videoBillingWorker
+	videoAuthCache        APIKeyAuthCacheInvalidator
 	accountRepo           AccountRepository
 	usageLogRepo          UsageLogRepository
 	usageBillingRepo      UsageBillingRepository

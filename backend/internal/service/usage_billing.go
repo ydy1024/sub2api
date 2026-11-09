@@ -17,6 +17,7 @@ var ErrUsageBillingRequestConflict = errors.New("usage billing request fingerpri
 
 // UsageBillingCommand describes one billable request that must be applied at most once.
 type UsageBillingCommand struct {
+	VideoTaskID        string // 内部持久化视频任务 ID；结算时在同一事务释放预留
 	RequestID          string
 	APIKeyID           int64
 	RequestFingerprint string

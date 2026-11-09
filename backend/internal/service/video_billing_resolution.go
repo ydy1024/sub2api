@@ -1,6 +1,9 @@
 package service
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 const (
 	VideoBillingResolution480P  = "480p"
@@ -8,27 +11,35 @@ const (
 	VideoBillingResolution1080P = "1080p"
 )
 
-// xAI 视频生成按秒计费，duration 请求参数允许 1-15 秒；未指定时上游默认生成 8 秒。
-// 计费时长必须与上游实际消耗对齐，否则用户可通过拉长 duration 套利（提交时长由用户控制）。
+// xAI 的请求范围保留为协议常量；计费不得用它截断其它供应商的实际时长。
 const (
 	VideoBillingMinDurationSeconds     = 1
 	VideoBillingMaxDurationSeconds     = 15
 	VideoBillingDefaultDurationSeconds = 8
 )
 
-// NormalizeVideoBillingDurationSecondsOrDefault 归一化计费用视频时长：
-// 未指定（<=0）按上游默认 8 秒计，超出上游允许区间按边界收敛。
+// NormalizeVideoBillingDurationSecondsOrDefault 保留实际上报的正数时长。
+// 各供应商的请求上限由各自协议校验，不能用 xAI 的上限截断其他视频的费用。
 func NormalizeVideoBillingDurationSecondsOrDefault(durationSeconds int) int {
 	if durationSeconds <= 0 {
 		return VideoBillingDefaultDurationSeconds
 	}
-	if durationSeconds < VideoBillingMinDurationSeconds {
-		return VideoBillingMinDurationSeconds
-	}
-	if durationSeconds > VideoBillingMaxDurationSeconds {
-		return VideoBillingMaxDurationSeconds
-	}
 	return durationSeconds
+}
+
+// videoResolutionFromSize 将 OpenAI 的宽×高字段转换为计费分辨率。
+func videoResolutionFromSize(size string) string {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(size)), "x")
+	if len(parts) != 2 {
+		return ""
+	}
+	width, errW := strconv.Atoi(parts[0])
+	height, errH := strconv.Atoi(parts[1])
+	if errW != nil || errH != nil || width <= 0 || height <= 0 {
+		return ""
+	}
+	resolution, _ := LookupVideoBillingResolution(strconv.Itoa(min(width, height)))
+	return resolution
 }
 
 // LookupVideoBillingResolution 归一化分辨率并报告是否为已知档位。

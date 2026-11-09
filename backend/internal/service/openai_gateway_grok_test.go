@@ -1058,6 +1058,22 @@ func TestParseGrokMediaVideoRequestResolution(t *testing.T) {
 	require.Equal(t, "720p", info.Resolution)
 }
 
+func TestParseGrokMediaVideoRequestSecondsString(t *testing.T) {
+	info := ParseGrokMediaRequest("application/json", []byte(`{
+		"model":"MX-SD-2.5-B",
+		"prompt":"snowy mountain",
+		"seconds":"10",
+		"resolution":"720p",
+		"aspect_ratio":"16:9"
+	}`))
+
+	require.Equal(t, "MX-SD-2.5-B", info.Model)
+	require.Equal(t, "snowy mountain", info.Prompt)
+	require.Equal(t, 10, info.DurationSeconds)
+	require.Equal(t, "720p", info.Resolution)
+	require.Equal(t, "16:9", info.AspectRatio)
+}
+
 func TestParseGrokMediaRequestAcceptsOfficialImageURLFields(t *testing.T) {
 	body := []byte(`{
 		"model":"grok-imagine-video-1.5",

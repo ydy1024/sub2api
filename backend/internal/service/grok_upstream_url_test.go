@@ -61,6 +61,54 @@ func TestGrokAPIKeyURLPolicyFollowsGlobalSecurityConfig(t *testing.T) {
 	})
 }
 
+func TestBuildGrokMediaURLForOpenAIVideoStyle(t *testing.T) {
+	account := &Account{
+		Platform: PlatformGrok,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":                  "https://api.popgo.site",
+			GrokMediaAPIStyleCredential: GrokMediaAPIStyleOpenAIVideo,
+		},
+	}
+	cfg := &config.Config{}
+
+	createURL, err := buildGrokMediaURL(account, cfg, GrokMediaEndpointVideosGenerations, "")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.popgo.site/v1/videos", createURL)
+
+	statusURL, err := buildGrokMediaURL(account, cfg, GrokMediaEndpointVideoStatus, "task_123")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.popgo.site/v1/videos/task_123", statusURL)
+
+	contentURL, err := buildGrokMediaURL(account, cfg, GrokMediaEndpointVideoContent, "task_123")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.popgo.site/v1/videos/task_123/content", contentURL)
+}
+
+func TestBuildGrokMediaURLForOpenAIVideoStyleOnOpenAIPlatform(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":                  "https://api.popgo.site",
+			GrokMediaAPIStyleCredential: GrokMediaAPIStyleOpenAIVideo,
+		},
+	}
+	cfg := &config.Config{}
+
+	createURL, err := buildGrokMediaURL(account, cfg, GrokMediaEndpointVideosGenerations, "")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.popgo.site/v1/videos", createURL)
+
+	statusURL, err := buildGrokMediaURL(account, cfg, GrokMediaEndpointVideoStatus, "task_123")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.popgo.site/v1/videos/task_123", statusURL)
+
+	contentURL, err := buildGrokMediaURL(account, cfg, GrokMediaEndpointVideoContent, "task_123")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.popgo.site/v1/videos/task_123/content", contentURL)
+}
+
 func TestGrokAPIKeyURLPolicyAppliesAllowlistAndPrivateHostControls(t *testing.T) {
 	account := &Account{
 		Platform: PlatformGrok,

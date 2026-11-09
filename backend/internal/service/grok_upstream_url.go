@@ -112,6 +112,9 @@ func buildGrokBillingURL(account *Account, cfg *config.Config, weekly bool) (str
 }
 
 func buildGrokMediaURL(account *Account, cfg *config.Config, endpoint GrokMediaEndpoint, requestID string) (string, error) {
+	if usesOpenAIVideoMediaAPI(account) && endpoint.IsVideoRequest() {
+		return buildOpenAIVideoMediaURL(account, cfg, endpoint, requestID)
+	}
 	validator, err := grokBaseURLValidator(account, cfg)
 	if err != nil {
 		return "", err
@@ -138,6 +141,54 @@ func buildGrokMediaURL(account *Account, cfg *config.Config, endpoint GrokMediaE
 		return videoURL + "/content", nil
 	default:
 		return "", fmt.Errorf("unsupported grok media endpoint: %s", endpoint)
+	}
+}
+
+// buildOpenAIVideoMediaURL implements the OpenAI-compatible asynchronous video
+// task protocol: POST /v1/videos, GET /v1/videos/{id}, and
+// GET /v1/videos/{id}/content.
+func buildOpenAIVideoMediaURL(account *Account, cfg *config.Config, endpoint GrokMediaEndpoint, requestID string) (string, error) {
+	if account == nil {
+		return "", fmt.Errorf("video account is required")
+	}
+	baseURL := strings.TrimSpace(account.GetCredential("base_url"))
+	if baseURL == "" {
+		return "", fmt.Errorf("video account missing base_url")
+	}
+	if cfg != nil && cfg.Security.URLAllowlist.Enabled {
+		validated, err := urlvalidator.ValidateHTTPSURL(baseURL, urlvalidator.ValidationOptions{
+			AllowedHosts:     cfg.Security.URLAllowlist.UpstreamHosts,
+			RequireAllowlist: true,
+			AllowPrivate:     cfg.Security.URLAllowlist.AllowPrivateHosts,
+		})
+		if err != nil {
+			return "", fmt.Errorf("invalid base_url: %w", err)
+		}
+		baseURL = validated
+	} else {
+		allowInsecure := cfg != nil && cfg.Security.URLAllowlist.AllowInsecureHTTP
+		validated, err := urlvalidator.ValidateURLFormat(baseURL, allowInsecure)
+		if err != nil {
+			return "", fmt.Errorf("invalid base_url: %w", err)
+		}
+		baseURL = validated
+	}
+
+	switch endpoint {
+	case GrokMediaEndpointVideosGenerations, GrokMediaEndpointVideosEdits, GrokMediaEndpointVideosExtensions:
+		return buildOpenAIEndpointURL(baseURL, "/v1/videos"), nil
+	case GrokMediaEndpointVideoStatus:
+		if strings.TrimSpace(requestID) == "" {
+			return "", fmt.Errorf("video task ID is required")
+		}
+		return buildOpenAIEndpointURL(baseURL, "/v1/videos/"+url.PathEscape(strings.TrimSpace(requestID))), nil
+	case GrokMediaEndpointVideoContent:
+		if strings.TrimSpace(requestID) == "" {
+			return "", fmt.Errorf("video task ID is required")
+		}
+		return buildOpenAIEndpointURL(baseURL, "/v1/videos/"+url.PathEscape(strings.TrimSpace(requestID))+"/content"), nil
+	default:
+		return "", fmt.Errorf("unsupported OpenAI video endpoint: %s", endpoint)
 	}
 }
 

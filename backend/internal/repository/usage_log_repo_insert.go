@@ -119,6 +119,7 @@ type usageLogBestEffortRequest struct {
 }
 
 type usageLogInsertPrepared struct {
+	billingSettled bool
 	createdAt      time.Time
 	requestID      string
 	rateMultiplier float64
@@ -192,6 +193,9 @@ func (r *usageLogRepository) CreateBestEffort(ctx context.Context, log *service.
 		resultCh: make(chan error, 1),
 	}
 	if key, ok := r.bestEffortRecentKey(req.prepared.requestID, req.apiKeyID); ok {
+		if req.prepared.billingSettled {
+			key += "\x1fsettled"
+		}
 		if _, exists := r.bestEffortRecent.Get(key); exists {
 			return nil
 		}
@@ -299,6 +303,9 @@ func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor,
 		RETURNING id, created_at
 	`
 
+	if log.BillingSettled {
+		query = strings.Replace(query, "ON CONFLICT (request_id, api_key_id) DO NOTHING", settledUsageLogConflictSQL, 1)
+	}
 	if err := scanSingleRow(ctx, sqlq, query, prepared.args, &log.ID, &log.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) && prepared.requestID != "" {
 			selectQuery := "SELECT id, created_at FROM usage_logs WHERE request_id = $1 AND api_key_id = $2"
@@ -485,6 +492,9 @@ func (r *usageLogRepository) flushCreateBatch(db *sql.DB, batch []usageLogCreate
 			uniqueOrder = append(uniqueOrder, key)
 			preparedByKey[key] = prepared
 		}
+		if prepared.billingSettled {
+			preparedByKey[key] = prepared
+		}
 		requestsByKey[key] = append(requestsByKey[key], req)
 	}
 
@@ -590,11 +600,16 @@ func (r *usageLogRepository) flushBestEffortBatch(db *sql.DB, batch []usageLogBe
 			}
 			groupsByKey[key] = group
 			groupOrder = append(groupOrder, group)
-			preparedList = append(preparedList, prepared)
+		}
+		if prepared.billingSettled {
+			group.prepared = prepared
 		}
 		group.reqs = append(group.reqs, req)
 	}
 
+	for _, group := range groupOrder {
+		preparedList = append(preparedList, group.prepared)
+	}
 	if len(preparedList) == 0 {
 		for _, req := range batch {
 			sendUsageLogBestEffortResult(req.resultCh, nil)
@@ -613,7 +628,7 @@ func (r *usageLogRepository) flushBestEffortBatch(db *sql.DB, batch []usageLogBe
 			if singleErr != nil {
 				logger.LegacyPrintf("repository.usage_log", "best-effort single fallback insert failed: %v", singleErr)
 			} else if group.prepared.requestID != "" && r != nil && r.bestEffortRecent != nil {
-				r.bestEffortRecent.SetDefault(group.key, struct{}{})
+				r.bestEffortRecent.SetDefault(settledRecentKey(group.key, group.prepared.billingSettled), struct{}{})
 			}
 			for _, req := range group.reqs {
 				sendUsageLogBestEffortResult(req.resultCh, singleErr)
@@ -623,7 +638,7 @@ func (r *usageLogRepository) flushBestEffortBatch(db *sql.DB, batch []usageLogBe
 	}
 	for _, group := range groupOrder {
 		if group.prepared.requestID != "" && r != nil && r.bestEffortRecent != nil {
-			r.bestEffortRecent.SetDefault(group.key, struct{}{})
+			r.bestEffortRecent.SetDefault(settledRecentKey(group.key, group.prepared.billingSettled), struct{}{})
 		}
 		for _, req := range group.reqs {
 			sendUsageLogBestEffortResult(req.resultCh, nil)
@@ -941,7 +956,7 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 		)
 		FROM resolved
 	`)
-	return query.String(), args
+	return applySettledUsageConflict(query.String(), args, preparedByKeyValues(preparedByKey))
 }
 
 func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (string, []any) {
@@ -1168,11 +1183,11 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`)
 
-	return query.String(), args
+	return applySettledUsageConflict(query.String(), args, preparedList)
 }
 
 func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared usageLogInsertPrepared) error {
-	_, err := sqlq.ExecContext(ctx, `
+	query := `
 		INSERT INTO usage_logs (
 			user_id,
 			api_key_id,
@@ -1245,7 +1260,9 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
-	`, prepared.args...)
+	`
+	query, args := applySettledUsageConflict(query, prepared.args, []usageLogInsertPrepared{prepared})
+	_, err := sqlq.ExecContext(ctx, query, args...)
 	return err
 }
 
@@ -1300,6 +1317,7 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 	}
 
 	return usageLogInsertPrepared{
+		billingSettled: log.BillingSettled,
 		createdAt:      createdAt,
 		requestID:      requestID,
 		rateMultiplier: rateMultiplier,

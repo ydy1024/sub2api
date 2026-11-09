@@ -1082,6 +1082,10 @@ export default {
           official: '官方 API'
         }
       },
+      grokVideoApiStyle: {
+        title: 'OpenAI 兼容视频协议',
+        hint: '启用后视频任务走上游 /v1/videos 创建、查询和下载，适用于 PopGo 等 OpenAI-compatible 视频服务。支持 OpenAI / Grok API Key 账号。'
+      },
       grokClientToolCache: {
         title: '客户端工具缓存（可能改变自动工具选择）',
         hint: '仅对已识别为 Free 的 Grok OAuth 账号生效，默认会为 Codex、Trae 等客户端函数工具请求启用上游提示缓存；如不接受自动工具选择行为，可关闭此开关退出。'

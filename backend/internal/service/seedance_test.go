@@ -85,10 +85,15 @@ func TestSeedanceValidationAndCapability(t *testing.T) {
 		_, err := buildSeedanceURL("https://example.com", SeedanceEndpointStatus, id)
 		require.Error(t, err, id)
 	}
-	for _, base := range []string{"https://example.com", "https://example.com/api/v3/", "https://example.com/v3"} {
+	for base, want := range map[string]string{
+		"https://example.com":         "https://example.com/api/v3/contents/generations/tasks",
+		"https://example.com/api/v3/": "https://example.com/api/v3/contents/generations/tasks",
+		"https://example.com/v3":      "https://example.com/v3/contents/generations/tasks",
+		"https://example.com/v1":      "https://example.com/v1/contents/generations/tasks",
+	} {
 		url, err := buildSeedanceURL(base, SeedanceEndpointCreate, "")
 		require.NoError(t, err)
-		require.NotContains(t, url, "/v3/api/v3")
+		require.Equal(t, want, url)
 	}
 	a := seedanceTestAccount()
 	require.True(t, a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilitySeedance))

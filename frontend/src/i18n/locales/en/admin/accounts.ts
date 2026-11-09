@@ -980,6 +980,10 @@ export default {
           official: 'Official API'
         }
       },
+      grokVideoApiStyle: {
+        title: 'OpenAI-compatible video protocol',
+        hint: 'Route video tasks to the upstream /v1/videos create, status, and content endpoints. Use for PopGo and other OpenAI-compatible video services. Available for OpenAI and Grok API-key accounts.'
+      },
       grokClientToolCache: {
         title: 'Client Tool Cache (May Change Automatic Tool Selection)',
         hint: 'For detected Grok Free OAuth accounts, this is enabled by default for client function tools such as Codex and Trae. Turn it off to opt out if the automatic tool-selection behavior is not acceptable.'

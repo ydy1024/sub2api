@@ -683,6 +683,30 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     })
   })
 
+  it('creates an OpenAI API-key account with the OpenAI-compatible video protocol', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('PopGo')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-popgo')
+    const capabilityIDs = wrapper
+      .findAll('[data-testid^="openai-endpoint-capability-"]')
+      .map((input) => input.attributes('data-testid'))
+    expect(capabilityIDs.slice(-2)).toEqual([
+      'openai-endpoint-capability-seedance',
+      'openai-endpoint-capability-openai_video'
+    ])
+    await wrapper.get('[data-testid="openai-endpoint-capability-openai_video"]').setValue(true)
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      openai_capabilities: ['chat_completions', 'embeddings', 'openai_video'],
+      video_api_style: 'openai_videos'
+    })
+  })
+
   it('creates a Cline account without an account type and with only the Chat Completions endpoint', async () => {
     const wrapper = mountModal()
     await wrapper.get('[data-testid="platform-button-cline"]').trigger('click')

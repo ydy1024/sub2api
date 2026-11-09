@@ -1570,7 +1570,7 @@ export interface CodexUsageSnapshot {
 
 export type OpenAICompactMode = 'auto' | 'force_on' | 'force_off'
 export type OpenAIResponsesMode = 'auto' | 'force_responses' | 'force_chat_completions'
-export type OpenAIEndpointCapability = 'chat_completions' | 'embeddings' | 'seedance'
+export type OpenAIEndpointCapability = 'chat_completions' | 'embeddings' | 'seedance' | 'openai_video'
 
 export interface OpenAICompactState {
   openai_compact_mode?: OpenAICompactMode
@@ -1853,6 +1853,11 @@ export interface UsageLog {
   image_input_cost: number
   image_output_tokens: number
   image_output_cost: number
+
+  // 视频计费用量；旧接口或历史记录可能没有这些字段。
+  video_count?: number
+  video_resolution?: string | null
+  video_duration_seconds?: number | null
 
   // User-Agent
   user_agent: string | null

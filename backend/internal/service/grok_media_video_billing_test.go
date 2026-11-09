@@ -51,6 +51,32 @@ func TestIsGrokVideoStatusBillable(t *testing.T) {
 	require.False(t, IsGrokVideoStatusBillable([]byte(`{"download_url":"/v1/videos/task/content"}`)))
 	// "completed" is not the official enum value
 	require.False(t, IsGrokVideoStatusBillable([]byte(`{"status":"completed","video":{"url":"https://vidgen.x.ai/x.mp4"}}`)))
+	// OpenAI-compatible video task protocol: completed + video_url / metadata.url
+	require.True(t, IsGrokVideoStatusBillable([]byte(`{"status":"completed","video_url":"https://relay.example/v1/videos/task/content"}`)))
+	require.True(t, IsGrokVideoStatusBillable([]byte(`{"status":"completed","metadata":{"url":"https://relay.example/v1/videos/task/content"}}`)))
+}
+
+func TestOpenAIVideoEndpointCapability(t *testing.T) {
+	t.Parallel()
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":                  "https://api.popgo.site",
+			GrokMediaAPIStyleCredential: GrokMediaAPIStyleOpenAIVideo,
+		},
+	}
+	require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityOpenAIVideo))
+
+	delete(account.Credentials, GrokMediaAPIStyleCredential)
+	require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityOpenAIVideo))
+
+	account.Credentials[openAIEndpointCapabilitiesCredentialKey] = []any{"chat_completions", "openai_video"}
+	require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityOpenAIVideo))
+
+	account.Platform = PlatformAnthropic
+	account.Credentials[GrokMediaAPIStyleCredential] = GrokMediaAPIStyleOpenAIVideo
+	require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityOpenAIVideo))
 }
 
 func TestExtractGrokVideoBillingFromStatusBodyPrefersUpstreamParams(t *testing.T) {
@@ -94,6 +120,29 @@ func TestExtractGrokVideoBillingFromStatusBodyFallsBackToPending(t *testing.T) {
 	require.Equal(t, "create-billing", result.BillingModel)
 	require.Equal(t, "create-upstream", result.UpstreamModel)
 	require.Equal(t, VideoBillingResolution1080P, result.VideoResolution)
+	require.Equal(t, 10, result.VideoDurationSeconds)
+}
+
+func TestExtractGrokVideoBillingFromOpenAIVideoStatusBody(t *testing.T) {
+	t.Parallel()
+	pending := &GrokVideoPendingBilling{
+		Model:                "MX-SD-2.5-B",
+		BillingModel:         "MX-SD-2.5-B",
+		VideoResolution:      VideoBillingResolution720P,
+		VideoDurationSeconds: 10,
+	}
+	body := []byte(`{
+		"id":"task_1ZIV3HiBit3JsSQHUcBRlVJOdgSBV9bY",
+		"object":"video",
+		"model":"MX-SD-2.5-B",
+		"status":"completed",
+		"video_url":"https://api.popgo.site/v1/videos/task_1ZIV3HiBit3JsSQHUcBRlVJOdgSBV9bY/content"
+	}`)
+	result := ExtractGrokVideoBillingFromStatusBody(body, pending, "task_1ZIV3HiBit3JsSQHUcBRlVJOdgSBV9bY")
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.VideoCount)
+	require.Equal(t, "MX-SD-2.5-B", result.BillingModel)
+	require.Equal(t, VideoBillingResolution720P, result.VideoResolution)
 	require.Equal(t, 10, result.VideoDurationSeconds)
 }
 

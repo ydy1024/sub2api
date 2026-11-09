@@ -57,7 +57,7 @@ func ParseSeedanceRequest(body []byte) (GrokMediaRequestInfo, error) {
 func buildSeedanceURL(base string, endpoint GrokMediaEndpoint, taskID string) (string, error) {
 	base = strings.TrimRight(base, "/")
 	// Accept an origin, a proxy prefix, or the full Ark API base.
-	if !strings.HasSuffix(base, "/api/v3") && !strings.HasSuffix(base, "/v3") {
+	if !openAIBaseURLHasVersionSuffix(base) {
 		base += "/api/v3"
 	}
 	base += "/contents/generations/tasks"
@@ -119,12 +119,16 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxy = account.Proxy.URL()
 	}
+	if err := markVideoSubmissionStarted(ctx); err != nil {
+		return nil, err
+	}
 	resp, err := s.httpUpstream.Do(req, proxy, account.ID, account.Concurrency)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(started).Milliseconds())
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	recordVideoSubmissionStatus(ctx, resp.StatusCode)
 	responseBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
@@ -142,6 +146,9 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 			return nil, fmt.Errorf("seedance create response missing task ID")
 		}
 		result.ResponseID = SeedanceTaskKey(id)
+		if err := s.persistVideoTaskID(ctx, result.ResponseID); err != nil {
+			return nil, err
+		}
 	}
 	if endpoint == SeedanceEndpointStatus {
 		result.ResponseID = taskID

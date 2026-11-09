@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import {
   BUILTIN_PLATFORM_CATALOG,
   resetPlatformCatalog,
@@ -456,6 +456,7 @@ describe('EditAccountModal', () => {
     expect(pausedCheckbox.element.checked).toBe(true)
     await pausedCheckbox.setValue(false)
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.group_ids).toEqual([1])
@@ -1192,6 +1193,34 @@ describe('EditAccountModal', () => {
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.base_url).toBe('https://api.x.ai/v1')
+  })
+
+  it('persists the OpenAI-compatible video protocol flag for an OpenAI API-key account', async () => {
+    const account = {
+      ...buildAccount(),
+      credentials_status: { has_api_key: true },
+      credentials: {
+        base_url: 'https://api.popgo.site',
+        video_api_style: 'openai_videos'
+      }
+    }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    const toggle = wrapper.get('[data-testid="openai-endpoint-capability-openai_video"]')
+      .element as HTMLInputElement
+    expect(toggle.checked).toBe(true)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.openai_capabilities)
+      .toContain('openai_video')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.video_api_style)
+      .toBe('openai_videos')
   })
 
   it('only submits model mapping credentials when saving an OpenAI spark shadow account', async () => {

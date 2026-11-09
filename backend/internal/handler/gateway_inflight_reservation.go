@@ -97,7 +97,7 @@ func reserveInflightBalanceCtx(
 // grokMediaInflightEstimate 媒体生成请求的估算输入；状态/内容查询返回空模型（不预留：
 // 查询会为已生成的媒体计费，不能因余额预留而拦截用户取回已付费结果）。
 func grokMediaInflightEstimate(endpoint service.GrokMediaEndpoint, model string, info service.GrokMediaRequestInfo, body []byte) service.InflightEstimateRequest {
-	if !endpoint.IsGenerationRequest() {
+	if !endpoint.IsGenerationRequest() || isGrokVideoCreateEndpoint(endpoint) {
 		return service.InflightEstimateRequest{}
 	}
 	switch endpoint {

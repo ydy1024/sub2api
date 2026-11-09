@@ -102,6 +102,9 @@ const (
 	// entitlement probe was forbidden. Video status lookups intentionally do not
 	// require this capability so already-submitted requests remain queryable.
 	OpenAIEndpointCapabilityGrokMediaGeneration OpenAIEndpointCapability = "grok_media_generation"
+	// OpenAIEndpointCapabilityOpenAIVideo marks API-key accounts using the
+	// OpenAI-compatible /v1/videos asynchronous video task protocol.
+	OpenAIEndpointCapabilityOpenAIVideo OpenAIEndpointCapability = "openai_video"
 	// OpenAIEndpointCapabilityResponses 表示上游确实提供 /v1/responses 端点。
 	// 与其他能力不同：支持状态来自 accounts.extra 的自动探测标记
 	// （openai_responses_supported / openai_responses_mode），而非
@@ -1920,6 +1923,12 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if capability == OpenAIEndpointCapabilitySeedance {
 		configured, _ := a.openAIEndpointCapabilitySet()
 		return configured["seedance"] && (a.Platform == PlatformOpenAI || a.Platform == PlatformBytePlus) && a.Type == AccountTypeAPIKey &&
+			strings.TrimSpace(a.GetCredential("base_url")) != ""
+	}
+	if capability == OpenAIEndpointCapabilityOpenAIVideo {
+		return (a.Platform == PlatformOpenAI || a.Platform == PlatformBytePlus || a.Platform == PlatformGrok) &&
+			a.Type == AccountTypeAPIKey &&
+			usesOpenAIVideoMediaAPI(a) &&
 			strings.TrimSpace(a.GetCredential("base_url")) != ""
 	}
 	if capability == "" {

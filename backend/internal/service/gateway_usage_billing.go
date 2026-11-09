@@ -73,6 +73,7 @@ type usageLogBestEffortWriter interface {
 
 // postUsageBillingParams 统一扣费所需的参数
 type postUsageBillingParams struct {
+	VideoTaskID           string
 	Cost                  *CostBreakdown
 	User                  *User
 	APIKey                *APIKey
@@ -292,6 +293,7 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 	}
 
 	cmd := &UsageBillingCommand{
+		VideoTaskID:        p.VideoTaskID,
 		RequestID:          requestID,
 		APIKeyID:           p.APIKey.ID,
 		UserID:             p.User.ID,
@@ -375,6 +377,9 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	result, err := repo.Apply(billingCtx, cmd)
 	if err != nil {
 		return false, err
+	}
+	if usageLog != nil && result != nil {
+		usageLog.BillingSettled = true
 	}
 
 	if result == nil || !result.Applied {
@@ -467,6 +472,11 @@ func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, de
 
 func syncBalanceCacheAfterDeduction(ctx context.Context, p *postUsageBillingParams, deps *billingDeps, result *UsageBillingApplyResult) {
 	if p == nil || p.Cost == nil || p.User == nil || deps == nil || deps.billingCacheService == nil {
+		return
+	}
+	if p.VideoTaskID != "" {
+		// 视频此前已经冻结余额，本次事务还会退回差额，不能再次按全额递减缓存。
+		_ = deps.billingCacheService.InvalidateUserBalance(ctx, p.User.ID)
 		return
 	}
 	if result != nil && result.NewBalance != nil && deps.billingCacheService.balanceBelowEligibilityThreshold(*result.NewBalance) {

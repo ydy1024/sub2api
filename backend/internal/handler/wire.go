@@ -144,6 +144,8 @@ func ProvideOpenAIGatewayHandler(
 	h.compositeResolver = compositeResolver
 	h.securityAuditCoordinator = coordinator
 	h.grokMediaEligibilityProber = grokQuotaService
+	gatewayService.SetVideoBillingAuthCache(apiKeyService)
+	gatewayService.StartVideoBilling()
 	return h
 }
 
