@@ -22,7 +22,7 @@ func (r *usageBillingRepository) CreateVideoBillingTask(ctx context.Context, tas
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var balance float64
 	if err := tx.QueryRowContext(ctx, "SELECT balance FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE", task.UserID).Scan(&balance); err != nil {
 		return err
@@ -92,7 +92,7 @@ func (r *usageBillingRepository) ListDueVideoBillingTasks(ctx context.Context, l
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var tasks []*service.VideoBillingTask
 	for rows.Next() {
 		task, err := readVideoTask(rows)
@@ -132,7 +132,7 @@ func (r *usageBillingRepository) FailVideoBillingTask(ctx context.Context, id st
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var userID int64
 	var subID *int64
 	var hold float64

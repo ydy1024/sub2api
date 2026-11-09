@@ -602,6 +602,8 @@ func TestAPIContracts(t *testing.T) {
 							"cache_read_tokens": 2,
 							"cache_creation_5m_tokens": 0,
 							"cache_creation_1h_tokens": 0,
+							"cache_creation_30m_tokens": 0,
+							"cache_creation_12h_tokens": 0,
 							"input_cost": 0,
 							"output_cost": 0,
 							"cache_creation_cost": 0,
@@ -625,6 +627,9 @@ func TestAPIContracts(t *testing.T) {
 							"image_size_source": null,
 							"image_size_breakdown": null,
 							"media_type": null,
+							"video_count": 0,
+							"video_resolution": null,
+							"video_duration_seconds": null,
 							"cache_ttl_overridden": false,
 							"created_at": "2025-01-02T03:04:05Z",
 							"user_agent": null
